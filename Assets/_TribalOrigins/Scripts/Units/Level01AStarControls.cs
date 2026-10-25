@@ -11,26 +11,22 @@ using UnityEngine.InputSystem;
 namespace TribalOrigins.Units
 {
     /// <summary>
-    /// M1.9: selection and click-to-move for the SAME M1.7 debug villagers,
-    /// upgraded to deterministic four-direction A* routes around a TEST obstruction.
-    /// Does not assert that raw terrain tile IDs are walkable/non-walkable in THQ.
+    /// M1.10: reuses M1.9 selection/movement, with data-driven walkability grid.
+    /// Only verified raw tile IDs should be blocked; THQ passability is NOT fully decoded.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(Level01SpawnDebug))]
+    [RequireComponent(typeof(Level01Walkability))]
     public sealed class Level01AStarControls : MonoBehaviour
     {
         private const int Width = Level01DebugMap.MapWidth;
         private const int Height = Level01DebugMap.MapHeight;
         private const string SpawnRootName = "Generated_Initial_Entities_DEBUG";
-        private const int ProxyHutSourceX = 6;
-        private const int ProxyHutSourceY = 11;
-        private const int ProxyHutWidth = 4;
-        private const int ProxyHutHeight = 4;
 
         [SerializeField, Min(0.1f)] private float movementSpeed = 2.5f;
         [SerializeField, Range(0.2f, 0.75f)] private float clickRadius = 0.53f;
         [SerializeField] private bool showDebugHelp = true;
-        [SerializeField] private bool showProxyHutBlock = true;
+        [SerializeField] private bool showBlockedCells = true;
         [SerializeField] private bool showSelectedPath = true;
 
         private sealed class RoutePlan
@@ -115,12 +111,24 @@ namespace TribalOrigins.Units
             }
             Debug.Log("[TribalOrigins] M1.9 A* SELF-TEST PASS: " + checks, this);
 
-            grid = new GridAStar(Width, Height);
-            // TEST ONLY. The real footprint origin and walkability map remain unverified.
-            // Choose a 4x4 proxy to the east/down (SOURCE coords) of the Hut marker.
-            // SourceY 11..14 becomes UnityY 36..33.
-            int hutBottomUnityY = Height - (ProxyHutSourceY + ProxyHutHeight);
-            grid.BlockRectangle(ProxyHutSourceX, hutBottomUnityY, ProxyHutWidth, ProxyHutHeight);
+            Level01Walkability walkability = GetComponent<Level01Walkability>();
+            if (walkability == null) walkability = gameObject.AddComponent<Level01Walkability>();
+            grid = walkability.BuildGrid(out int blockedCount, out string collisionError);
+            if (grid == null)
+            {
+                Debug.LogError("[TribalOrigins] M1.10 COLLISION GRID FAILED: " + collisionError, this);
+                yield break;
+            }
+            foreach (Transform villager in villagers)
+            {
+                Vector2Int cell = WorldToCell(villager.position);
+                if (!grid.IsWalkable(cell))
+                {
+                    Debug.LogError("[TribalOrigins] M1.10 INVALID SPAWN: " + villager.name +
+                        " is on blocked cell " + cell + ". Clear incorrect blocked raw tile IDs.", this);
+                    yield break;
+                }
+            }
 
             ringSprite = MakeCircleSprite(true, out ringTexture);
             targetSprite = MakeCrossSprite(out targetTexture);
@@ -133,21 +141,31 @@ namespace TribalOrigins.Units
                 new Color(1f, 0.4f, 0.07f, 1f), 110);
             destinationMarker.SetActive(false);
 
-            if (showProxyHutBlock)
+            if (showBlockedCells)
             {
-                for (int y = hutBottomUnityY; y < hutBottomUnityY + ProxyHutHeight; y++)
-                    for (int x = ProxyHutSourceX; x < ProxyHutSourceX + ProxyHutWidth; x++)
+                int drawn = 0;
+                const int MaxMarkers = 500;
+                for (int y = 0; y < Height; y++)
+                {
+                    for (int x = 0; x < Width; x++)
                     {
-                        GameObject marker = SpawnIndicator("TEST_Blocked_" + x + "_" + y,
+                        if (grid.IsWalkable(new Vector2Int(x, y))) continue;
+                        if (drawn >= MaxMarkers) continue;
+                        GameObject marker = SpawnIndicator("M1_10_Blocked_" + x + "_" + y,
                             tileSprite, new Color(0.95f, 0.14f, 0.12f, 0.40f), 50);
                         marker.transform.position = CellCentre(new Vector2Int(x, y), -0.10f);
                         obstacleMarkers.Add(marker);
+                        drawn++;
                     }
+                }
+                if (blockedCount > MaxMarkers)
+                    Debug.LogWarning("[TribalOrigins] M1.10: Showing only " + MaxMarkers +
+                        " of " + blockedCount + " blocked cells. Collision still applies everywhere.", this);
             }
             ready = true;
-            Debug.Log("[TribalOrigins] M1.9 READY: A* 4-direction, 64x48, 9 villagers, " +
-                "16 TEMP blocked Hut cells. Left click select, right click move. " +
-                "No terrain walkability, unit collision or THQ pathfinding claims.", this);
+            Debug.Log("[TribalOrigins] M1.10 READY: A* 4-direction, 64x48, 9 villagers, " +
+                blockedCount + " blocked cells. Left click select, right click move. " +
+                "Tile IDs are blocked ONLY when explicitly configured; source passability unverified.", this);
         }
 
         private void Update()
@@ -206,7 +224,7 @@ namespace TribalOrigins.Units
             selected = nearest;
             selectionRing.SetActive(selected != null);
             RefreshPathAndTarget();
-            if (selected != null) Debug.Log("[TribalOrigins] M1.9 SELECTED: " + selected.name, this);
+            if (selected != null) Debug.Log("[TribalOrigins] M1.10 SELECTED: " + selected.name, this);
         }
 
         private void MoveSelectedTo(Vector3 point)
@@ -216,18 +234,18 @@ namespace TribalOrigins.Units
             Vector2Int start = WorldToCell(selected.position);
             if (!grid.InBounds(goal))
             {
-                Debug.LogWarning("[TribalOrigins] M1.9: Destination outside 64x48 map.", this);
+                Debug.LogWarning("[TribalOrigins] M1.10: Destination outside 64x48 map.", this);
                 return;
             }
             if (!grid.IsWalkable(goal))
             {
-                Debug.LogWarning("[TribalOrigins] M1.9 BLOCKED destination " + goal +
-                    " (temporary Hut footprint). Existing movement unchanged.", this);
+                Debug.LogWarning("[TribalOrigins] M1.10 BLOCKED destination " + goal +
+                    " (collision grid). Existing movement unchanged.", this);
                 return;
             }
             if (!grid.FindPath(start, goal, calculatedPath))
             {
-                Debug.LogWarning("[TribalOrigins] M1.9 NO PATH from " + start + " to " + goal, this);
+                Debug.LogWarning("[TribalOrigins] M1.10 NO PATH from " + start + " to " + goal, this);
                 return;
             }
 
@@ -236,7 +254,7 @@ namespace TribalOrigins.Units
             var final = CellCentre(goal, selected.position.z);
             activeRoutes[selected] = new RoutePlan(cells, nextIndex, final);
             RefreshPathAndTarget();
-            Debug.Log($"[TribalOrigins] M1.9 A* PATH: {selected.name} ({start.x},{start.y}) -> " +
+            Debug.Log($"[TribalOrigins] M1.10 A* PATH: {selected.name} ({start.x},{start.y}) -> " +
                 $"({goal.x},{goal.y}); steps={cells.Count - 1}; " +
                 $"source target=({goal.x},{Height - 1 - goal.y}).", this);
         }
@@ -335,9 +353,9 @@ namespace TribalOrigins.Units
         private void OnGUI()
         {
             if (!ready || !showDebugHelp) return;
-            GUI.Box(new Rect(8, 8, 440, 88),
-                "TRIBAL ORIGINS | M1.9 A* DEBUG\n" +
-                "Left: select  |  Right: A* move  |  Red cells: TEST Hut block\n" +
+            GUI.Box(new Rect(8, 8, 430, 80),
+                "TRIBAL ORIGINS | M1.10 A* DEBUG\n" +
+                "Left: select | Right: move | Middle: pan | Wheel: zoom\n" +
                 "Selected: " + (selected == null ? "None" : selected.name));
         }
 
