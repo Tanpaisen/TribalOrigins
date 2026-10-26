@@ -62,6 +62,18 @@ namespace TribalOrigins.Core
             if (blockTemporaryChiefHutArea)
                 BlockRect(grid, 6, 33, 4, 4);
 
+            // M2.4A: place collision ONLY for enabled prototype facilities.
+            // Footprints are shared with the visual test markers (not THQ coordinates).
+            Level01PrototypeFacilities facilities = GetComponent<Level01PrototypeFacilities>();
+            bool testFacilities = facilities != null && facilities.ActiveForNavigation;
+            if (testFacilities)
+            {
+                RectInt hut = Level01PrototypeFacilities.HutFootprint;
+                RectInt kitchen = Level01PrototypeFacilities.KitchenFootprint;
+                BlockRect(grid, hut.x, hut.y, hut.width, hut.height);
+                BlockRect(grid, kitchen.x, kitchen.y, kitchen.width, kitchen.height);
+            }
+
             // An independent, optional obstacle for verifying A* reroutes;
             // NOT a feature of the THQ map. At Unity x=12 and y=30..35.
             if (extraTestWall)
@@ -74,7 +86,8 @@ namespace TribalOrigins.Core
             Debug.Log("[TribalOrigins] M1.10 COLLISION GRID: " + Width + "x" + Height +
                 ", blocked=" + blockedCount + ", verified raw tile IDs=" + forbidden.Count +
                 ", proxy Hut=" + blockTemporaryChiefHutArea +
-                ", test wall=" + extraTestWall + ". Unlisted IDs remain WALKABLE (unknown), not confirmed terrain.", this);
+                ", test wall=" + extraTestWall + ", M2.4A test facilities=" + testFacilities +
+                ". Unlisted IDs remain WALKABLE (unknown), not confirmed terrain.", this);
             return grid;
         }
 
