@@ -52,6 +52,9 @@ namespace TribalOrigins.Units
         private GridAStar grid;
         private Camera worldCamera;
         private Transform selected;
+
+        // M2.1 HUD reads selection without duplicating mouse handlers.
+        public Transform SelectedVillager => selected;
         private GameObject selectionRing;
         private GameObject destinationMarker;
         private Sprite ringSprite;
@@ -253,6 +256,9 @@ namespace TribalOrigins.Units
             int nextIndex = cells.Count > 1 ? 1 : 0;
             var final = CellCentre(goal, selected.position.z);
             activeRoutes[selected] = new RoutePlan(cells, nextIndex, final);
+            VillagerData movingData = selected.GetComponent<VillagerData>();
+            if (movingData != null && movingData.Initialized)
+                movingData.SetAction(VillagerAction.Moving);
             RefreshPathAndTarget();
             Debug.Log($"[TribalOrigins] M1.10 A* PATH: {selected.name} ({start.x},{start.y}) -> " +
                 $"({goal.x},{goal.y}); steps={cells.Count - 1}; " +
@@ -290,6 +296,13 @@ namespace TribalOrigins.Units
             foreach (Transform unit in finishedRoutes)
             {
                 activeRoutes.Remove(unit);
+                if (unit != null)
+                {
+                    VillagerData finishedData = unit.GetComponent<VillagerData>();
+                    if (finishedData != null && finishedData.Initialized &&
+                        finishedData.Action == VillagerAction.Moving)
+                        finishedData.SetAction(VillagerAction.Idle);
+                }
                 if (unit == selected)
                     RefreshPathAndTarget();
             }
