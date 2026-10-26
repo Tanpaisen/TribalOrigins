@@ -34,11 +34,13 @@ namespace TribalOrigins.Units
             public readonly List<Vector2Int> Cells;
             public int NextIndex;
             public readonly Vector3 FinalPosition;
-            public RoutePlan(List<Vector2Int> cells, int nextIndex, Vector3 finalPosition)
+            public readonly bool AutoNeeds;
+            public RoutePlan(List<Vector2Int> cells, int nextIndex, Vector3 finalPosition, bool autoNeeds)
             {
                 Cells = cells;
                 NextIndex = nextIndex;
                 FinalPosition = finalPosition;
+                AutoNeeds = autoNeeds;
             }
         }
 
@@ -55,6 +57,50 @@ namespace TribalOrigins.Units
 
         // M2.1 HUD reads selection without duplicating mouse handlers.
         public Transform SelectedVillager => selected;
+
+        // M2.4B: accepted manual commands have priority over automatic needs travel.
+        public event Action<Transform> ManualMoveOrderAccepted;
+        public bool IsNavigationReady => ready;
+
+        public bool HasActiveRoute(Transform unit)
+        {
+            return unit != null && activeRoutes.ContainsKey(unit);
+        }
+
+        public bool TryGetCurrentDestination(Transform unit, out Vector2Int cell)
+        {
+            cell = default(Vector2Int);
+            if (unit == null || !activeRoutes.TryGetValue(unit, out RoutePlan plan)) return false;
+            cell = new Vector2Int(Mathf.FloorToInt(plan.FinalPosition.x),
+                Mathf.FloorToInt(plan.FinalPosition.y));
+            return true;
+        }
+
+        /// <summary>Routes ONE existing villager using the exact same grid as player commands.
+        /// Returns false when unavailable, blocked or unreachable. Never teleports units.</summary>
+        public bool TryOrderAutoMovement(Transform unit, Vector2Int destination)
+        {
+            return TryAssignRoute(unit, destination, true, out string ignored);
+        }
+
+        /// <summary>Restores a previously issued path without firing a new manual-order event.</summary>
+        public bool TryResumeMovement(Transform unit, Vector2Int destination)
+        {
+            return TryAssignRoute(unit, destination, false, out string ignored);
+        }
+
+        public void CancelAutoMovement(Transform unit)
+        {
+            if (unit == null) return;
+            if (activeRoutes.TryGetValue(unit, out RoutePlan plan) && plan.AutoNeeds)
+            {
+                activeRoutes.Remove(unit);
+                VillagerData data = unit.GetComponent<VillagerData>();
+                if (data != null && data.Initialized && data.Action == VillagerAction.Moving)
+                    data.SetAction(VillagerAction.Idle);
+                if (unit == selected) RefreshPathAndTarget();
+            }
+        }
         private GameObject selectionRing;
         private GameObject destinationMarker;
         private Sprite ringSprite;
@@ -235,34 +281,57 @@ namespace TribalOrigins.Units
             if (selected == null) return;
             Vector2Int goal = WorldToCell(point);
             Vector2Int start = WorldToCell(selected.position);
+            if (!TryAssignRoute(selected, goal, false, out string failure))
+            {
+                Debug.LogWarning("[TribalOrigins] M1.10 " + failure + 
+                    ". Existing movement unchanged.", this);
+                return;
+            }
+            // After successful assignment: AI must not overwrite a fresh player order.
+            ManualMoveOrderAccepted?.Invoke(selected);
+            Debug.Log("[TribalOrigins] M1.10 A* PATH: " + selected.name + " (" +
+                start.x + "," + start.y + ") -> (" + goal.x + "," + goal.y +"); " +
+                "source target=(" + goal.x + "," + (Height - 1 - goal.y) + ").", this);
+        }
+
+        private bool TryAssignRoute(Transform unit, Vector2Int goal, bool autoNeeds,
+            out string failure)
+        {
+            failure = null;
+            if (!ready || grid == null || unit == null || !villagers.Contains(unit))
+            {
+                failure = "NO NAVIGATION / unknown villager";
+                return false;
+            }
+            VillagerData data = unit.GetComponent<VillagerData>();
+            if (data != null && (!data.Initialized || !data.IsAlive))
+            {
+                failure = "villager not ready/alive";
+                return false;
+            }
             if (!grid.InBounds(goal))
             {
-                Debug.LogWarning("[TribalOrigins] M1.10: Destination outside 64x48 map.", this);
-                return;
+                failure = "destination outside 64x48 map";
+                return false;
             }
             if (!grid.IsWalkable(goal))
             {
-                Debug.LogWarning("[TribalOrigins] M1.10 BLOCKED destination " + goal +
-                    " (collision grid). Existing movement unchanged.", this);
-                return;
+                failure = "BLOCKED destination " + goal + " (collision grid)";
+                return false;
             }
-            if (!grid.FindPath(start, goal, calculatedPath))
+            Vector2Int start = WorldToCell(unit.position);
+            if (!grid.IsWalkable(start) || !grid.FindPath(start, goal, calculatedPath))
             {
-                Debug.LogWarning("[TribalOrigins] M1.10 NO PATH from " + start + " to " + goal, this);
-                return;
+                failure = "NO PATH from " + start + " to " + goal;
+                return false;
             }
-
             var cells = new List<Vector2Int>(calculatedPath);
             int nextIndex = cells.Count > 1 ? 1 : 0;
-            var final = CellCentre(goal, selected.position.z);
-            activeRoutes[selected] = new RoutePlan(cells, nextIndex, final);
-            VillagerData movingData = selected.GetComponent<VillagerData>();
-            if (movingData != null && movingData.Initialized)
-                movingData.SetAction(VillagerAction.Moving);
-            RefreshPathAndTarget();
-            Debug.Log($"[TribalOrigins] M1.10 A* PATH: {selected.name} ({start.x},{start.y}) -> " +
-                $"({goal.x},{goal.y}); steps={cells.Count - 1}; " +
-                $"source target=({goal.x},{Height - 1 - goal.y}).", this);
+            activeRoutes[unit] = new RoutePlan(cells, nextIndex,
+                CellCentre(goal, unit.position.z), autoNeeds);
+            if (data != null && data.Initialized) data.SetAction(VillagerAction.Moving);
+            if (unit == selected) RefreshPathAndTarget();
+            return true;
         }
 
         private void AdvanceRoutes()

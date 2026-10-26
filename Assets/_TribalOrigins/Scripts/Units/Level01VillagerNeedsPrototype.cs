@@ -80,7 +80,7 @@ namespace TribalOrigins.Units
                             if (printReadyLog)
                                 Debug.Log("[TribalOrigins] M2.3 NEEDS PROTOTYPE READY: 9 existing villagers, " +
                                     "logical tick=" + secondsPerTick + "s. Hunger/energy/mood are TEST rates; " +
-                                    "no HP loss, no autonomous eating/resting yet.", this);
+                                    "no HP loss; M2.4B handles optional test eating/resting when enabled.", this);
                             yield break;
                         }
                     }
@@ -111,6 +111,16 @@ namespace TribalOrigins.Units
             {
                 VillagerData v = s.Villager;
                 if (v == null || !v.Initialized || !v.IsAlive) continue;
+
+                // M2.4B owns the recovery phase. Do not consume idle/movement rates
+                // during Eating/Resting: otherwise M2.3 and M2.4B fight each other.
+                if (v.Action == VillagerAction.Eating || v.Action == VillagerAction.Resting)
+                {
+                    s.HungerTime = 0f;
+                    s.EnergyTime = 0f;
+                    s.MoodTime = 0f;
+                    continue;
+                }
 
                 bool moving = v.Action == VillagerAction.Moving;
                 int food = v.Satiety;
@@ -155,13 +165,13 @@ namespace TribalOrigins.Units
                     if (food <= lowFoodThreshold && !s.LoggedLowFood)
                     {
                         Debug.Log("[TribalOrigins] M2.3 LOW FOOD: " + v.DisplayName +
-                            " (" + food + "). Kitchen/food-seeking AI is not implemented yet.", this);
+                            " (" + food + "). M2.4B may seek a TEST Kitchen if enabled.", this);
                         s.LoggedLowFood = true;
                     }
                     if (energy <= lowEnergyThreshold && !s.LoggedLowEnergy)
                     {
                         Debug.Log("[TribalOrigins] M2.3 LOW ENERGY: " + v.DisplayName +
-                            " (" + energy + "). Hut/rest AI is not implemented yet.", this);
+                            " (" + energy + "). M2.4B may seek a TEST Hut if enabled.", this);
                         s.LoggedLowEnergy = true;
                     }
                 }
